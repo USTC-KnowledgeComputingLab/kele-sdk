@@ -21,7 +21,7 @@ async def main():
         print('\n=== 2. Upload Knowledge Bases (kbs) ===')
         kbs_result = await client.kbs(
             files=[
-                ('config.yaml', b'timeout: 60'),
+                ('README', '这个是一个上传文件的测试, KELE引擎并不是用他'.encode()),
             ]
         )
         session_uuid = kbs_result['uuid']
@@ -40,16 +40,24 @@ async def main():
                 print('Stdout (last 5 lines):')
                 for line in stdout_lines[-5:]:
                     print(f'  {line}')
+            if result.stderr:
+                stderr_lines = result.stderr.strip().split('\n')
+                print('Stderr (last 5 lines):')
+                for line in stderr_lines[-5:]:
+                    print(f'  {line}')
+            if result.log:
+                log_lines = result.log.strip().split('\n')
+                print('Log (last 5 lines):')
+                for line in log_lines[-5:]:
+                    print(f'  {line}')
 
             if result.engine_result:
                 print('Engine Result received successfully.')
 
             if result.metric:
-                print(f'Metrics: {result.metric.get("total_time", "N/A")}s')
+                print(f'Metrics: {result.metric["meta"]["duration_seconds_total"]}s')
         else:
             print(f'Error Detail: {result.detail}')
-            if result.stderr:
-                print(f'Stderr: {result.stderr}')
 
 
 if __name__ == '__main__':
