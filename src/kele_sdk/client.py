@@ -10,19 +10,6 @@ from anyio import Path
 from pydantic import BaseModel, model_validator
 
 
-def _mapping_value(value: Any) -> dict[str, Any] | None:
-    if isinstance(value, Mapping):
-        return dict(value)
-    return None
-
-
-def _first_non_none(*values: Any) -> Any:
-    for value in values:
-        if value is not None:
-            return value
-    return None
-
-
 class InferResult(BaseModel):
     """Result of a Kele inference execution."""
 
@@ -300,3 +287,18 @@ class KeleClient:
         )
         response.raise_for_status()
         return KbsResult(**response.json())
+
+
+def _mapping_value(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, Mapping):
+        return dict(value)
+    return None
+
+
+
+def _first_non_none(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
