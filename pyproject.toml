@@ -16,3 +16,7 @@ dynamic = ["version"]
 [build-system]
 requires = ["setuptools>=80.9.0", "setuptools_scm>=9.2.2"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+version_scheme = "no-guess-dev"
+fallback_version = "0.0.0"
