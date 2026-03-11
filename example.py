@@ -24,7 +24,7 @@ async def main():
                 ('README', '这个是一个上传文件的测试, KELE引擎并不是用他'.encode()),
             ]
         )
-        session_uuid = kbs_result['uuid']
+        session_uuid = kbs_result.uuid
         print(f'Files uploaded to session: {session_uuid}')
 
         print('\n=== 3. Run Inference (infer) ===')
@@ -55,14 +55,11 @@ async def main():
                 print('Engine Result received successfully.')
 
             if result.metric:
-                print(f'Metrics: {result.metric["meta"]["duration_seconds_total"]}s')
+                print('Metrics:')
+                print(result.metric['meta'])
         else:
             print(f'Error Detail: {result.detail}')
 
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except Exception as e:
-        print(f'Failed to connect to API: {e}')
-        print('Make sure the KELE API service is running.')
+    asyncio.run(main())

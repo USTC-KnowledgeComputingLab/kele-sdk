@@ -1,11 +1,16 @@
+"""Client for Kele SDK."""
+
 import httpx
-from typing import Any
+from typing import Any, Self
+from types import TracebackType
 from pathlib import Path as StdPath
 from anyio import Path
 from pydantic import BaseModel
 
 
-class KeleResult(BaseModel):
+class InferResult(BaseModel):
+    """Result of a Kele inference execution."""
+
     stdout: str | None = None
     stderr: str | None = None
     exit_code: int | None = None
@@ -17,38 +22,65 @@ class KeleResult(BaseModel):
     detail: str | None = None
 
 
+class HealthzResult(BaseModel):
+    """Result of a health check."""
+
+    status: str
+
+
+class ReadyzResult(BaseModel):
+    """Result of a readiness check."""
+
+    status: str
+
+
+class KbsResult(BaseModel):
+    """Result of a KBS file upload."""
+
+    uuid: str
+    status: str
+
+
 class KeleClient:
+    """Client for interacting with the Kele service."""
+
     def __init__(self, base_url: str = 'http://localhost:8000'):
         self.base_url = base_url.rstrip('/')
         self.client = httpx.AsyncClient(base_url=self.base_url)
 
-    async def close(self):
+    async def close(self) -> None:
+        """Close the underlying HTTP client."""
         await self.client.aclose()
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         await self.close()
 
-    async def healthz(self) -> dict[str, str]:
+    async def healthz(self) -> HealthzResult:
         """Health check endpoint."""
         response = await self.client.get('/v1/healthz')
         response.raise_for_status()
-        return response.json()
+        return HealthzResult(**response.json())
 
-    async def readyz(self) -> dict[str, str]:
+    async def readyz(self) -> ReadyzResult:
         """Readiness check endpoint."""
         response = await self.client.get('/v1/readyz')
         response.raise_for_status()
-        return response.json()
+        return ReadyzResult(**response.json())
 
     async def infer(
         self,
         files: list[str | StdPath | Path | tuple[str, bytes]],
         entrypoint: str = 'main.py',
         uuid: str | None = None,
-    ) -> KeleResult:
+    ) -> InferResult:
         """
         Process multiple Python reasoning scripts.
 
@@ -77,13 +109,13 @@ class KeleClient:
             timeout=None,
         )
         response.raise_for_status()
-        return KeleResult(**response.json())
+        return InferResult(**response.json())
 
     async def kbs(
         self,
         files: list[str | StdPath | Path | tuple[str, bytes]],
         uuid: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> KbsResult:
         """
         Process multiple files without running an entrypoint.
 
@@ -111,4 +143,4 @@ class KeleClient:
             timeout=None,
         )
         response.raise_for_status()
-        return response.json()
+        return KbsResult(**response.json())
