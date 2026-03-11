@@ -4,10 +4,10 @@ from kele_sdk import KeleClient
 
 
 async def main():
-    geometry_script_path = Path(__file__).parent / 'geometry_for_wo_tool_complex_2.py'
+    relationship_script_path = Path(__file__).parent / 'relation.py'
 
-    if not geometry_script_path.exists():
-        print(f'Error: {geometry_script_path} not found.')
+    if not relationship_script_path.exists():
+        print(f'Error: {relationship_script_path} not found.')
         return
 
     async with KeleClient(base_url='http://210.45.70.163:12080') as client:
@@ -28,9 +28,13 @@ async def main():
         print(f'Files uploaded to session: {session_uuid}')
 
         print('\n=== 3. Run Inference (infer) ===')
-        print(f"Sending inference request for '{geometry_script_path.name}'...")
+        print(f"Sending inference request for '{relationship_script_path.name}'...")
 
-        result = await client.infer(files=[geometry_script_path], entrypoint=geometry_script_path.name, uuid=session_uuid)
+        result = await client.infer(
+            files=[relationship_script_path],
+            entrypoint=relationship_script_path.name,
+            uuid=session_uuid,
+        )
 
         print(f'Status: {result.status}')
         if result.status == 'ok':
@@ -63,3 +67,5 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
+
