@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+
 from kele_sdk import KeleClient
 
 
@@ -35,6 +36,15 @@ async def main():
         print(f'Status: {result.status}')
         if result.status == 'ok':
             print(f'Exit Code: {result.exit_code}')
+            print(f'Engine Status: {result.engine_status}')
+            print(f'Conflict Reason: {result.conflict_reason}')
+            print(f'Solution Count: {result.solution_count}')
+            print(f'Has Solution: {result.has_solution}')
+            print(f'Iterations: {result.iterations}')
+            print(f'Execute Steps: {result.execute_steps}')
+            print(f'Terminated By: {result.terminated_by}')
+            if result.final_facts is not None:
+                print(f'Final Facts Count: {len(result.final_facts)}')
             if result.stdout:
                 stdout_lines = result.stdout.strip().split('\n')
                 print('Stdout (last 5 lines):')
@@ -54,9 +64,9 @@ async def main():
             if result.engine_result:
                 print('Engine Result received successfully.')
 
-            if result.metric:
+            if result.metric_log:
                 print('Metrics:')
-                print(result.metric['meta'])
+                print(result.metric_log.get('meta'))
         else:
             print(f'Error Detail: {result.detail}')
 
