@@ -17,6 +17,18 @@ dynamic = ["version"]
 requires = ["setuptools>=80.9.0", "setuptools_scm>=9.2.2"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["kele_sdk", "kele_sdk.*", "kl", "kl.*"]
+
+[tool.setuptools.package-data]
+kele_sdk = ["py.typed"]
+kl = ["py.typed", "*.pyi", "knowledge_bases/*.pyi"]
+
 [tool.setuptools_scm]
 version_scheme = "no-guess-dev"
 fallback_version = "0.0.0"
