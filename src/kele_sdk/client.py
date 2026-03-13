@@ -1,6 +1,5 @@
 """Client for Kele SDK."""
 
-from collections.abc import Mapping
 import asyncio
 import os
 import warnings
@@ -11,7 +10,7 @@ from typing import Any, Self
 
 import httpx
 from anyio import Path
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel
 
 SDK_PACKAGE_NAME = 'kele-sdk'
 SDK_RELEASE_METADATA_URL = f'https://pypi.org/pypi/{SDK_PACKAGE_NAME}/json'
@@ -21,6 +20,39 @@ SDK_UPDATE_CHECK_TIMEOUT_SECONDS = 1.0
 _has_started_sdk_update_check = False
 _has_completed_sdk_update_check = False
 _has_warned_about_sdk_update = False
+
+
+class _SessionPayload(BaseModel):
+    uuid: str
+
+
+class _UploadedFilePayload(BaseModel):
+    name: str
+
+
+class _InferInputPayload(BaseModel):
+    entrypoint: str
+    files: list[_UploadedFilePayload]
+
+
+class _ExecutionPayload(BaseModel):
+    status: str
+    exit_code: int
+    stdout: str
+    stderr: str
+    log: str
+    metrics: dict[str, Any]
+
+
+class _ErrorPayload(BaseModel):
+    status: str
+    code: str | None = None
+    detail: str | None = None
+
+
+class _UploadFilesPayload(BaseModel):
+    uploaded: list[_UploadedFilePayload]
+    count: int
 
 
 def _parse_version(value: str) -> tuple[int, ...] | None:
@@ -49,10 +81,10 @@ def _get_latest_sdk_version(payload: dict[str, Any]) -> str | None:
     if not isinstance(info, dict):
         return None
 
-    version = info.get('version')
-    if not isinstance(version, str):
+    version_value = info.get('version')
+    if not isinstance(version_value, str):
         return None
-    return version
+    return version_value
 
 
 def _is_sdk_update_check_disabled() -> bool:
@@ -63,76 +95,61 @@ def _is_sdk_update_check_disabled() -> bool:
 class InferResult(BaseModel):
     """Result of a Kele inference execution."""
 
-    session: dict[str, Any] | None = None
-    input: dict[str, Any] | None = None
-    execution: dict[str, Any] | None = None
-    error: dict[str, Any] | None = None
-    stdout: str | None = None
-    stderr: str | None = None
-    exit_code: int | None = None
-    metric: dict[str, Any] | None = None
-    log: str | None = None
-    engine_result: dict[str, Any] | None = None
-    uuid: str | None = None
-    status: str | None = None
-    detail: str | None = None
-
-    @model_validator(mode='before')
-    @classmethod
-    def _normalize_payload(cls, data: Any) -> Any:
-        payload = _mapping_value(data)
-        if payload is None:
-            return data
-
-        # TODO: If the server adopts a nested response shape in the future,
-        # switch the public contract to that structure directly instead of
-        # relying on client-side normalization for both flat and nested payloads.
-        session = _mapping_value(payload.get('session'))
-        input_payload = _mapping_value(payload.get('input'))
-        execution = _mapping_value(payload.get('execution'))
-        error = _mapping_value(payload.get('error'))
-        result_payload = _mapping_value(
-            _first_non_none(
-                payload.get('engine_result'),
-                payload.get('result'),
-            )
-        )
-
-        return {
-            **payload,
-            'session': session,
-            'input': input_payload,
-            'execution': execution,
-            'error': error,
-            'stdout': _first_non_none(payload.get('stdout'), execution and execution.get('stdout')),
-            'stderr': _first_non_none(payload.get('stderr'), execution and execution.get('stderr')),
-            'exit_code': _first_non_none(payload.get('exit_code'), execution and execution.get('exit_code')),
-            'metric': _first_non_none(
-                _mapping_value(payload.get('metric')),
-                _mapping_value(payload.get('metrics')),
-                execution and _mapping_value(execution.get('metric')),
-                execution and _mapping_value(execution.get('metrics')),
-            ),
-            'log': _first_non_none(payload.get('log'), execution and execution.get('log')),
-            'engine_result': result_payload,
-            'uuid': _first_non_none(payload.get('uuid'), session and session.get('uuid')),
-            'status': _first_non_none(
-                payload.get('status'),
-                execution and execution.get('status'),
-                error and error.get('status'),
-            ),
-            'detail': _first_non_none(
-                payload.get('detail'),
-                error and error.get('detail'),
-                error and error.get('message'),
-                error and error.get('reason'),
-            ),
-        }
+    status: str
+    session: _SessionPayload
+    input: _InferInputPayload | None = None
+    execution: _ExecutionPayload | None = None
+    result: dict[str, Any] | None = None
+    error: _ErrorPayload | None = None
 
     def _engine_value(self, key: str) -> Any:
-        if self.engine_result is None:
+        if self.result is None:
             return None
-        return self.engine_result.get(key)
+        return self.result.get(key)
+
+    @property
+    def engine_result(self) -> dict[str, Any] | None:
+        return self.result
+
+    @property
+    def uuid(self) -> str:
+        return self.session.uuid
+
+    @property
+    def stdout(self) -> str | None:
+        if self.execution is None:
+            return None
+        return self.execution.stdout
+
+    @property
+    def stderr(self) -> str | None:
+        if self.execution is None:
+            return None
+        return self.execution.stderr
+
+    @property
+    def exit_code(self) -> int | None:
+        if self.execution is None:
+            return None
+        return self.execution.exit_code
+
+    @property
+    def metric(self) -> dict[str, Any] | None:
+        if self.execution is None:
+            return None
+        return self.execution.metrics
+
+    @property
+    def log(self) -> str | None:
+        if self.execution is None:
+            return None
+        return self.execution.log
+
+    @property
+    def detail(self) -> str | None:
+        if self.error is None:
+            return None
+        return self.error.detail
 
     @property
     def metric_log(self) -> dict[str, Any] | None:
@@ -214,24 +231,14 @@ class ReadyzResult(BaseModel):
 class KbsResult(BaseModel):
     """Result of a KBS file upload."""
 
-    session: dict[str, Any] | None = None
-    uuid: str | None = None
-    status: str | None = None
+    status: str
+    session: _SessionPayload
+    files: _UploadFilesPayload
+    error: _ErrorPayload | None = None
 
-    @model_validator(mode='before')
-    @classmethod
-    def _normalize_payload(cls, data: Any) -> Any:
-        payload = _mapping_value(data)
-        if payload is None:
-            return data
-
-        session = _mapping_value(payload.get('session'))
-        return {
-            **payload,
-            'session': session,
-            'uuid': _first_non_none(payload.get('uuid'), session and session.get('uuid')),
-            'status': _first_non_none(payload.get('status'), payload.get('upload_status')),
-        }
+    @property
+    def uuid(self) -> str:
+        return self.session.uuid
 
 
 class KeleClient:
@@ -246,6 +253,7 @@ class KeleClient:
         self.base_url = base_url.rstrip('/')
         self.sdk_package_name = sdk_package_name
         self.sdk_release_metadata_url = sdk_release_metadata_url
+        self.installed_sdk_version: str | None
         try:
             self.installed_sdk_version = version(self.sdk_package_name)
         except PackageNotFoundError:
@@ -394,18 +402,4 @@ class KeleClient:
         )
         response.raise_for_status()
         return KbsResult(**response.json())
-
-
-def _mapping_value(value: Any) -> dict[str, Any] | None:
-    if isinstance(value, Mapping):
-        return dict(value)
-    return None
-
-
-
-def _first_non_none(*values: Any) -> Any:
-    for value in values:
-        if value is not None:
-            return value
-    return None
 
