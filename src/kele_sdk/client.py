@@ -3,6 +3,7 @@
 import asyncio
 import os
 import warnings
+from collections.abc import Mapping
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path as StdPath
 from types import TracebackType
@@ -10,7 +11,7 @@ from typing import Any, Self
 
 import httpx
 from anyio import Path
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 SDK_PACKAGE_NAME = 'kele-sdk'
 SDK_RELEASE_METADATA_URL = f'https://pypi.org/pypi/{SDK_PACKAGE_NAME}/json'
@@ -23,7 +24,7 @@ _has_warned_about_sdk_update = False
 
 
 class _SessionPayload(BaseModel):
-    uuid: str
+    uuid: str | None = None
 
 
 class _UploadedFilePayload(BaseModel):
@@ -31,28 +32,28 @@ class _UploadedFilePayload(BaseModel):
 
 
 class _InferInputPayload(BaseModel):
-    entrypoint: str
-    files: list[_UploadedFilePayload]
+    entrypoint: str | None = None
+    files: list[_UploadedFilePayload] = Field(default_factory=list)
 
 
 class _ExecutionPayload(BaseModel):
-    status: str
-    exit_code: int
-    stdout: str
-    stderr: str
-    log: str
-    metrics: dict[str, Any]
+    status: str | None = None
+    exit_code: int | None = None
+    stdout: str | None = None
+    stderr: str | None = None
+    log: str | None = None
+    metrics: dict[str, Any] | None = None
 
 
 class _ErrorPayload(BaseModel):
-    status: str
+    status: str | None = None
     code: str | None = None
     detail: str | None = None
 
 
 class _UploadFilesPayload(BaseModel):
-    uploaded: list[_UploadedFilePayload]
-    count: int
+    uploaded: list[_UploadedFilePayload] = Field(default_factory=list)
+    count: int | None = None
 
 
 def _parse_version(value: str) -> tuple[int, ...] | None:
@@ -96,11 +97,16 @@ class InferResult(BaseModel):
     """Result of a Kele inference execution."""
 
     status: str
-    session: _SessionPayload
+    session: _SessionPayload | None = None
     input: _InferInputPayload | None = None
     execution: _ExecutionPayload | None = None
     result: dict[str, Any] | None = None
     error: _ErrorPayload | None = None
+
+    @model_validator(mode='before')
+    @classmethod
+    def _normalize_payload(cls, value: Any) -> Any:
+        return _normalize_infer_payload(value)
 
     def _engine_value(self, key: str) -> Any:
         if self.result is None:
@@ -112,7 +118,9 @@ class InferResult(BaseModel):
         return self.result
 
     @property
-    def uuid(self) -> str:
+    def uuid(self) -> str | None:
+        if self.session is None:
+            return None
         return self.session.uuid
 
     @property
@@ -232,12 +240,19 @@ class KbsResult(BaseModel):
     """Result of a KBS file upload."""
 
     status: str
-    session: _SessionPayload
-    files: _UploadFilesPayload
+    session: _SessionPayload | None = None
+    files: _UploadFilesPayload | None = None
     error: _ErrorPayload | None = None
 
+    @model_validator(mode='before')
+    @classmethod
+    def _normalize_payload(cls, value: Any) -> Any:
+        return _normalize_kbs_payload(value)
+
     @property
-    def uuid(self) -> str:
+    def uuid(self) -> str | None:
+        if self.session is None:
+            return None
         return self.session.uuid
 
 
@@ -403,3 +418,166 @@ class KeleClient:
         response.raise_for_status()
         return KbsResult(**response.json())
 
+
+def _normalize_infer_payload(value: Any) -> Any:
+    payload = _as_dict(value)
+    if payload is None:
+        return value
+
+    # TODO: Drop this compatibility path after all supported API servers use the nested response shape.
+    session = _as_dict(payload.get('session'))
+    if session is None and payload.get('uuid') is not None:
+        session = {'uuid': payload.get('uuid')}
+
+    input_payload = _as_dict(payload.get('input'))
+    if input_payload is None and ('entrypoint' in payload or 'files' in payload):
+        input_payload = {}
+        entrypoint = payload.get('entrypoint')
+        if entrypoint is not None:
+            input_payload['entrypoint'] = entrypoint
+        files = _normalize_uploaded_files(payload.get('files'))
+        if files is not None:
+            input_payload['files'] = files
+    elif input_payload is not None:
+        files = _normalize_uploaded_files(input_payload.get('files'))
+        if files is not None:
+            input_payload['files'] = files
+
+    execution = _as_dict(payload.get('execution'))
+    if execution is None:
+        execution = {}
+        exit_code = payload.get('exit_code')
+        if exit_code is not None:
+            execution['exit_code'] = exit_code
+        stdout = payload.get('stdout')
+        if stdout is not None:
+            execution['stdout'] = stdout
+        stderr = payload.get('stderr')
+        if stderr is not None:
+            execution['stderr'] = stderr
+        log = payload.get('log')
+        if log is not None:
+            execution['log'] = log
+        metrics = _first_non_none(_as_dict(payload.get('metrics')), _as_dict(payload.get('metric')))
+        if metrics is not None:
+            execution['metrics'] = metrics
+        if not execution:
+            execution = None
+    else:
+        metrics = _first_non_none(_as_dict(execution.get('metrics')), _as_dict(execution.get('metric')))
+        if metrics is not None:
+            execution['metrics'] = metrics
+
+    result = _first_non_none(_as_dict(payload.get('result')), _as_dict(payload.get('engine_result')))
+
+    error = _as_dict(payload.get('error'))
+    if error is None:
+        detail = payload.get('detail')
+        code = payload.get('code')
+        if detail is not None or code is not None:
+            error = {
+                'status': payload.get('status'),
+                'code': code,
+                'detail': detail,
+            }
+
+    status = payload.get('status')
+    if not isinstance(status, str):
+        status = 'ok' if any(item is not None for item in (session, execution, result)) else 'error'
+
+    normalized: dict[str, Any] = {'status': status}
+    if session is not None:
+        normalized['session'] = session
+    if input_payload is not None:
+        normalized['input'] = input_payload
+    if execution is not None:
+        normalized['execution'] = execution
+    if result is not None:
+        normalized['result'] = result
+    if error is not None:
+        normalized['error'] = error
+    return normalized
+
+
+def _normalize_kbs_payload(value: Any) -> Any:
+    payload = _as_dict(value)
+    if payload is None:
+        return value
+
+    # TODO: Drop this compatibility path after all supported API servers use the nested response shape.
+    session = _as_dict(payload.get('session'))
+    if session is None and payload.get('uuid') is not None:
+        session = {'uuid': payload.get('uuid')}
+
+    files_payload = _as_dict(payload.get('files'))
+    if files_payload is None:
+        uploaded = _normalize_uploaded_files(_first_non_none(payload.get('uploaded'), payload.get('files')))
+        count = payload.get('count')
+        if uploaded is not None or count is not None or session is not None:
+            files_payload = {}
+            if uploaded is not None:
+                files_payload['uploaded'] = uploaded
+                if count is None:
+                    count = len(uploaded)
+            if count is not None:
+                files_payload['count'] = count
+    else:
+        uploaded = _normalize_uploaded_files(_first_non_none(files_payload.get('uploaded'), files_payload.get('files')))
+        if uploaded is not None:
+            files_payload['uploaded'] = uploaded
+            if files_payload.get('count') is None:
+                files_payload['count'] = len(uploaded)
+
+    error = _as_dict(payload.get('error'))
+    if error is None:
+        detail = payload.get('detail')
+        code = payload.get('code')
+        if detail is not None or code is not None:
+            error = {
+                'status': payload.get('status'),
+                'code': code,
+                'detail': detail,
+            }
+
+    status = payload.get('status')
+    if not isinstance(status, str):
+        status = 'ok' if any(item is not None for item in (session, files_payload)) else 'error'
+
+    normalized: dict[str, Any] = {'status': status}
+    if session is not None:
+        normalized['session'] = session
+    if files_payload is not None:
+        normalized['files'] = files_payload
+    if error is not None:
+        normalized['error'] = error
+    return normalized
+
+
+def _normalize_uploaded_files(value: Any) -> list[dict[str, str]] | None:
+    if not isinstance(value, list):
+        return None
+
+    normalized: list[dict[str, str]] = []
+    for item in value:
+        item_dict = _as_dict(item)
+        if item_dict is not None:
+            name = item_dict.get('name')
+            if isinstance(name, str):
+                normalized.append({'name': name})
+            continue
+        if isinstance(item, str):
+            normalized.append({'name': item})
+    return normalized
+
+
+def _as_dict(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, Mapping):
+        return dict(value)
+    return None
+
+
+def _first_non_none(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
