@@ -1,9 +1,9 @@
 """Client for Kele SDK."""
 
-from collections.abc import Mapping
 import asyncio
 import os
 import warnings
+from collections.abc import Mapping
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path as StdPath
 from types import TracebackType
@@ -11,16 +11,52 @@ from typing import Any, Self
 
 import httpx
 from anyio import Path
-from pydantic import BaseModel, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 SDK_PACKAGE_NAME = 'kele-sdk'
 SDK_RELEASE_METADATA_URL = f'https://pypi.org/pypi/{SDK_PACKAGE_NAME}/json'
 SDK_UPDATE_CHECK_DISABLE_ENV = 'KELE_SDK_DISABLE_UPDATE_CHECK'
 SDK_UPDATE_CHECK_TIMEOUT_SECONDS = 1.0
+KELE_API_VERSION = '0.2.0'
+KELE_API_VERSION_HEADER = 'X-Kele-Api-Version'
 
 _has_started_sdk_update_check = False
 _has_completed_sdk_update_check = False
 _has_warned_about_sdk_update = False
+_has_warned_about_api_version = False
+
+
+class _SessionPayload(BaseModel):
+    uuid: str | None = None
+
+
+class _UploadedFilePayload(BaseModel):
+    name: str
+
+
+class _InferInputPayload(BaseModel):
+    entrypoint: str | None = None
+    files: list[_UploadedFilePayload] = Field(default_factory=list)
+
+
+class _ExecutionPayload(BaseModel):
+    status: str | None = None
+    exit_code: int | None = None
+    stdout: str | None = None
+    stderr: str | None = None
+    log: str | None = None
+    metrics: dict[str, Any] | None = None
+
+
+class _ErrorPayload(BaseModel):
+    status: str | None = None
+    code: str | None = None
+    detail: str | None = None
+
+
+class _UploadFilesPayload(BaseModel):
+    uploaded: list[_UploadedFilePayload] = Field(default_factory=list)
+    count: int | None = None
 
 
 def _parse_version(value: str) -> tuple[int, ...] | None:
@@ -49,10 +85,10 @@ def _get_latest_sdk_version(payload: dict[str, Any]) -> str | None:
     if not isinstance(info, dict):
         return None
 
-    version = info.get('version')
-    if not isinstance(version, str):
+    version_value = info.get('version')
+    if not isinstance(version_value, str):
         return None
-    return version
+    return version_value
 
 
 def _is_sdk_update_check_disabled() -> bool:
@@ -63,76 +99,71 @@ def _is_sdk_update_check_disabled() -> bool:
 class InferResult(BaseModel):
     """Result of a Kele inference execution."""
 
-    session: dict[str, Any] | None = None
-    input: dict[str, Any] | None = None
-    execution: dict[str, Any] | None = None
-    error: dict[str, Any] | None = None
-    stdout: str | None = None
-    stderr: str | None = None
-    exit_code: int | None = None
-    metric: dict[str, Any] | None = None
-    log: str | None = None
-    engine_result: dict[str, Any] | None = None
-    uuid: str | None = None
-    status: str | None = None
-    detail: str | None = None
+    status: str
+    session: _SessionPayload | None = None
+    input: _InferInputPayload | None = None
+    execution: _ExecutionPayload | None = None
+    engine_result: dict[str, Any] | None = Field(
+        default=None,
+        validation_alias=AliasChoices('engine_result', 'result'),
+    )
+    error: _ErrorPayload | None = None
 
     @model_validator(mode='before')
     @classmethod
-    def _normalize_payload(cls, data: Any) -> Any:
-        payload = _mapping_value(data)
-        if payload is None:
-            return data
-
-        # TODO: If the server adopts a nested response shape in the future,
-        # switch the public contract to that structure directly instead of
-        # relying on client-side normalization for both flat and nested payloads.
-        session = _mapping_value(payload.get('session'))
-        input_payload = _mapping_value(payload.get('input'))
-        execution = _mapping_value(payload.get('execution'))
-        error = _mapping_value(payload.get('error'))
-        result_payload = _mapping_value(
-            _first_non_none(
-                payload.get('engine_result'),
-                payload.get('result'),
-            )
-        )
-
-        return {
-            **payload,
-            'session': session,
-            'input': input_payload,
-            'execution': execution,
-            'error': error,
-            'stdout': _first_non_none(payload.get('stdout'), execution and execution.get('stdout')),
-            'stderr': _first_non_none(payload.get('stderr'), execution and execution.get('stderr')),
-            'exit_code': _first_non_none(payload.get('exit_code'), execution and execution.get('exit_code')),
-            'metric': _first_non_none(
-                _mapping_value(payload.get('metric')),
-                _mapping_value(payload.get('metrics')),
-                execution and _mapping_value(execution.get('metric')),
-                execution and _mapping_value(execution.get('metrics')),
-            ),
-            'log': _first_non_none(payload.get('log'), execution and execution.get('log')),
-            'engine_result': result_payload,
-            'uuid': _first_non_none(payload.get('uuid'), session and session.get('uuid')),
-            'status': _first_non_none(
-                payload.get('status'),
-                execution and execution.get('status'),
-                error and error.get('status'),
-            ),
-            'detail': _first_non_none(
-                payload.get('detail'),
-                error and error.get('detail'),
-                error and error.get('message'),
-                error and error.get('reason'),
-            ),
-        }
+    def _normalize_payload(cls, value: Any) -> Any:
+        return _normalize_infer_payload(value)
 
     def _engine_value(self, key: str) -> Any:
         if self.engine_result is None:
             return None
         return self.engine_result.get(key)
+
+    @property
+    def result(self) -> dict[str, Any] | None:
+        return self.engine_result
+
+    @property
+    def uuid(self) -> str | None:
+        if self.session is None:
+            return None
+        return self.session.uuid
+
+    @property
+    def stdout(self) -> str | None:
+        if self.execution is None:
+            return None
+        return self.execution.stdout
+
+    @property
+    def stderr(self) -> str | None:
+        if self.execution is None:
+            return None
+        return self.execution.stderr
+
+    @property
+    def exit_code(self) -> int | None:
+        if self.execution is None:
+            return None
+        return self.execution.exit_code
+
+    @property
+    def metric(self) -> dict[str, Any] | None:
+        if self.execution is None:
+            return None
+        return self.execution.metrics
+
+    @property
+    def log(self) -> str | None:
+        if self.execution is None:
+            return None
+        return self.execution.log
+
+    @property
+    def detail(self) -> str | None:
+        if self.error is None:
+            return None
+        return self.error.detail
 
     @property
     def metric_log(self) -> dict[str, Any] | None:
@@ -214,24 +245,21 @@ class ReadyzResult(BaseModel):
 class KbsResult(BaseModel):
     """Result of a KBS file upload."""
 
-    session: dict[str, Any] | None = None
-    uuid: str | None = None
-    status: str | None = None
+    status: str
+    session: _SessionPayload | None = None
+    files: _UploadFilesPayload | None = None
+    error: _ErrorPayload | None = None
 
     @model_validator(mode='before')
     @classmethod
-    def _normalize_payload(cls, data: Any) -> Any:
-        payload = _mapping_value(data)
-        if payload is None:
-            return data
+    def _normalize_payload(cls, value: Any) -> Any:
+        return _normalize_kbs_payload(value)
 
-        session = _mapping_value(payload.get('session'))
-        return {
-            **payload,
-            'session': session,
-            'uuid': _first_non_none(payload.get('uuid'), session and session.get('uuid')),
-            'status': _first_non_none(payload.get('status'), payload.get('upload_status')),
-        }
+    @property
+    def uuid(self) -> str | None:
+        if self.session is None:
+            return None
+        return self.session.uuid
 
 
 class KeleClient:
@@ -242,10 +270,13 @@ class KeleClient:
         base_url: str = 'http://localhost:8000',
         sdk_package_name: str = SDK_PACKAGE_NAME,
         sdk_release_metadata_url: str = SDK_RELEASE_METADATA_URL,
+        expected_api_version: str = KELE_API_VERSION,
     ):
         self.base_url = base_url.rstrip('/')
         self.sdk_package_name = sdk_package_name
         self.sdk_release_metadata_url = sdk_release_metadata_url
+        self.expected_api_version = expected_api_version
+        self.installed_sdk_version: str | None
         try:
             self.installed_sdk_version = version(self.sdk_package_name)
         except PackageNotFoundError:
@@ -294,6 +325,25 @@ class KeleClient:
         _has_started_sdk_update_check = True
         asyncio.create_task(self._check_for_sdk_update())
 
+    def _maybe_warn_about_api_version(self, response: httpx.Response) -> None:
+        global _has_warned_about_api_version
+
+        if _has_warned_about_api_version:
+            return
+
+        api_version = response.headers.get(KELE_API_VERSION_HEADER)
+        if api_version is None or api_version == self.expected_api_version:
+            return
+
+        warnings.warn(
+            (
+                f'KELE API version {api_version} does not match the SDK expected API version '
+                f'{self.expected_api_version}. Some response fields may be incompatible.'
+            ),
+            stacklevel=2,
+        )
+        _has_warned_about_api_version = True
+
     async def close(self) -> None:
         """Close the underlying HTTP client."""
         await self.client.aclose()
@@ -314,6 +364,7 @@ class KeleClient:
         self._maybe_start_sdk_update_check()
         response = await self.client.get('/v1/healthz')
         response.raise_for_status()
+        self._maybe_warn_about_api_version(response)
         return HealthzResult(**response.json())
 
     async def readyz(self) -> ReadyzResult:
@@ -321,6 +372,7 @@ class KeleClient:
         self._maybe_start_sdk_update_check()
         response = await self.client.get('/v1/readyz')
         response.raise_for_status()
+        self._maybe_warn_about_api_version(response)
         return ReadyzResult(**response.json())
 
     async def infer(
@@ -358,6 +410,7 @@ class KeleClient:
             timeout=None,
         )
         response.raise_for_status()
+        self._maybe_warn_about_api_version(response)
         return InferResult(**response.json())
 
     async def kbs(
@@ -393,14 +446,165 @@ class KeleClient:
             timeout=None,
         )
         response.raise_for_status()
+        self._maybe_warn_about_api_version(response)
         return KbsResult(**response.json())
 
 
-def _mapping_value(value: Any) -> dict[str, Any] | None:
+def _normalize_infer_payload(value: Any) -> Any:
+    payload = _as_dict(value)
+    if payload is None:
+        return value
+
+    # TODO: Drop this compatibility path after all supported API servers use the nested response shape.
+    session = _as_dict(payload.get('session'))
+    if session is None and payload.get('uuid') is not None:
+        session = {'uuid': payload.get('uuid')}
+
+    input_payload = _as_dict(payload.get('input'))
+    if input_payload is None and ('entrypoint' in payload or 'files' in payload):
+        input_payload = {}
+        entrypoint = payload.get('entrypoint')
+        if entrypoint is not None:
+            input_payload['entrypoint'] = entrypoint
+        files = _normalize_uploaded_files(payload.get('files'))
+        if files is not None:
+            input_payload['files'] = files
+    elif input_payload is not None:
+        files = _normalize_uploaded_files(input_payload.get('files'))
+        if files is not None:
+            input_payload['files'] = files
+
+    execution = _as_dict(payload.get('execution'))
+    if execution is None:
+        execution = {}
+        exit_code = payload.get('exit_code')
+        if exit_code is not None:
+            execution['exit_code'] = exit_code
+        stdout = payload.get('stdout')
+        if stdout is not None:
+            execution['stdout'] = stdout
+        stderr = payload.get('stderr')
+        if stderr is not None:
+            execution['stderr'] = stderr
+        log = payload.get('log')
+        if log is not None:
+            execution['log'] = log
+        metrics = _first_non_none(_as_dict(payload.get('metrics')), _as_dict(payload.get('metric')))
+        if metrics is not None:
+            execution['metrics'] = metrics
+        if not execution:
+            execution = None
+    else:
+        metrics = _first_non_none(_as_dict(execution.get('metrics')), _as_dict(execution.get('metric')))
+        if metrics is not None:
+            execution['metrics'] = metrics
+
+    engine_result = _first_non_none(_as_dict(payload.get('engine_result')), _as_dict(payload.get('result')))
+
+    error = _as_dict(payload.get('error'))
+    if error is None:
+        detail = payload.get('detail')
+        code = payload.get('code')
+        if detail is not None or code is not None:
+            error = {
+                'status': payload.get('status'),
+                'code': code,
+                'detail': detail,
+            }
+
+    status = payload.get('status')
+    if not isinstance(status, str):
+        status = 'ok' if any(item is not None for item in (session, execution, engine_result)) else 'error'
+
+    normalized: dict[str, Any] = {'status': status}
+    if session is not None:
+        normalized['session'] = session
+    if input_payload is not None:
+        normalized['input'] = input_payload
+    if execution is not None:
+        normalized['execution'] = execution
+    if engine_result is not None:
+        normalized['engine_result'] = engine_result
+    if error is not None:
+        normalized['error'] = error
+    return normalized
+
+
+def _normalize_kbs_payload(value: Any) -> Any:
+    payload = _as_dict(value)
+    if payload is None:
+        return value
+
+    # TODO: Drop this compatibility path after all supported API servers use the nested response shape.
+    session = _as_dict(payload.get('session'))
+    if session is None and payload.get('uuid') is not None:
+        session = {'uuid': payload.get('uuid')}
+
+    files_payload = _as_dict(payload.get('files'))
+    if files_payload is None:
+        uploaded = _normalize_uploaded_files(_first_non_none(payload.get('uploaded'), payload.get('files')))
+        count = payload.get('count')
+        if uploaded is not None or count is not None or session is not None:
+            files_payload = {}
+            if uploaded is not None:
+                files_payload['uploaded'] = uploaded
+                if count is None:
+                    count = len(uploaded)
+            if count is not None:
+                files_payload['count'] = count
+    else:
+        uploaded = _normalize_uploaded_files(_first_non_none(files_payload.get('uploaded'), files_payload.get('files')))
+        if uploaded is not None:
+            files_payload['uploaded'] = uploaded
+            if files_payload.get('count') is None:
+                files_payload['count'] = len(uploaded)
+
+    error = _as_dict(payload.get('error'))
+    if error is None:
+        detail = payload.get('detail')
+        code = payload.get('code')
+        if detail is not None or code is not None:
+            error = {
+                'status': payload.get('status'),
+                'code': code,
+                'detail': detail,
+            }
+
+    status = payload.get('status')
+    if not isinstance(status, str):
+        status = 'ok' if any(item is not None for item in (session, files_payload)) else 'error'
+
+    normalized: dict[str, Any] = {'status': status}
+    if session is not None:
+        normalized['session'] = session
+    if files_payload is not None:
+        normalized['files'] = files_payload
+    if error is not None:
+        normalized['error'] = error
+    return normalized
+
+
+def _normalize_uploaded_files(value: Any) -> list[dict[str, str]] | None:
+    if not isinstance(value, list):
+        return None
+
+    normalized: list[dict[str, str]] = []
+    for item in value:
+        item_dict = _as_dict(item)
+        if item_dict is not None:
+            name = item_dict.get('name')
+            if isinstance(name, str):
+                normalized.append({'name': name})
+            continue
+        if isinstance(item, str):
+            normalized.append({'name': item})
+    return normalized
+
+
+def _as_dict(value: Any) -> dict[str, Any] | None:
     if isinstance(value, Mapping):
         return dict(value)
     return None
-
 
 
 def _first_non_none(*values: Any) -> Any:
@@ -408,4 +612,5 @@ def _first_non_none(*values: Any) -> Any:
         if value is not None:
             return value
     return None
+
 
