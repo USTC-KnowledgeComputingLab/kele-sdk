@@ -11,7 +11,7 @@ from typing import Any, Self
 
 import httpx
 from anyio import Path
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 SDK_PACKAGE_NAME = 'kele-sdk'
 SDK_RELEASE_METADATA_URL = f'https://pypi.org/pypi/{SDK_PACKAGE_NAME}/json'
@@ -100,7 +100,10 @@ class InferResult(BaseModel):
     session: _SessionPayload | None = None
     input: _InferInputPayload | None = None
     execution: _ExecutionPayload | None = None
-    result: dict[str, Any] | None = None
+    engine_result: dict[str, Any] | None = Field(
+        default=None,
+        validation_alias=AliasChoices('engine_result', 'result'),
+    )
     error: _ErrorPayload | None = None
 
     @model_validator(mode='before')
@@ -109,13 +112,13 @@ class InferResult(BaseModel):
         return _normalize_infer_payload(value)
 
     def _engine_value(self, key: str) -> Any:
-        if self.result is None:
+        if self.engine_result is None:
             return None
-        return self.result.get(key)
+        return self.engine_result.get(key)
 
     @property
-    def engine_result(self) -> dict[str, Any] | None:
-        return self.result
+    def result(self) -> dict[str, Any] | None:
+        return self.engine_result
 
     @property
     def uuid(self) -> str | None:
@@ -468,7 +471,7 @@ def _normalize_infer_payload(value: Any) -> Any:
         if metrics is not None:
             execution['metrics'] = metrics
 
-    result = _first_non_none(_as_dict(payload.get('result')), _as_dict(payload.get('engine_result')))
+    engine_result = _first_non_none(_as_dict(payload.get('engine_result')), _as_dict(payload.get('result')))
 
     error = _as_dict(payload.get('error'))
     if error is None:
@@ -483,7 +486,7 @@ def _normalize_infer_payload(value: Any) -> Any:
 
     status = payload.get('status')
     if not isinstance(status, str):
-        status = 'ok' if any(item is not None for item in (session, execution, result)) else 'error'
+        status = 'ok' if any(item is not None for item in (session, execution, engine_result)) else 'error'
 
     normalized: dict[str, Any] = {'status': status}
     if session is not None:
@@ -492,8 +495,8 @@ def _normalize_infer_payload(value: Any) -> Any:
         normalized['input'] = input_payload
     if execution is not None:
         normalized['execution'] = execution
-    if result is not None:
-        normalized['result'] = result
+    if engine_result is not None:
+        normalized['engine_result'] = engine_result
     if error is not None:
         normalized['error'] = error
     return normalized
@@ -581,3 +584,4 @@ def _first_non_none(*values: Any) -> Any:
         if value is not None:
             return value
     return None
+
