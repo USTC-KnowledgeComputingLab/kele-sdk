@@ -17,10 +17,13 @@ SDK_PACKAGE_NAME = 'kele-sdk'
 SDK_RELEASE_METADATA_URL = f'https://pypi.org/pypi/{SDK_PACKAGE_NAME}/json'
 SDK_UPDATE_CHECK_DISABLE_ENV = 'KELE_SDK_DISABLE_UPDATE_CHECK'
 SDK_UPDATE_CHECK_TIMEOUT_SECONDS = 1.0
+KELE_API_VERSION = '0.2.0'
+KELE_API_VERSION_HEADER = 'X-Kele-Api-Version'
 
 _has_started_sdk_update_check = False
 _has_completed_sdk_update_check = False
 _has_warned_about_sdk_update = False
+_has_warned_about_api_version = False
 
 
 class _SessionPayload(BaseModel):
@@ -267,10 +270,12 @@ class KeleClient:
         base_url: str = 'http://localhost:8000',
         sdk_package_name: str = SDK_PACKAGE_NAME,
         sdk_release_metadata_url: str = SDK_RELEASE_METADATA_URL,
+        expected_api_version: str = KELE_API_VERSION,
     ):
         self.base_url = base_url.rstrip('/')
         self.sdk_package_name = sdk_package_name
         self.sdk_release_metadata_url = sdk_release_metadata_url
+        self.expected_api_version = expected_api_version
         self.installed_sdk_version: str | None
         try:
             self.installed_sdk_version = version(self.sdk_package_name)
@@ -320,6 +325,25 @@ class KeleClient:
         _has_started_sdk_update_check = True
         asyncio.create_task(self._check_for_sdk_update())
 
+    def _maybe_warn_about_api_version(self, response: httpx.Response) -> None:
+        global _has_warned_about_api_version
+
+        if _has_warned_about_api_version:
+            return
+
+        api_version = response.headers.get(KELE_API_VERSION_HEADER)
+        if api_version is None or api_version == self.expected_api_version:
+            return
+
+        warnings.warn(
+            (
+                f'KELE API version {api_version} does not match the SDK expected API version '
+                f'{self.expected_api_version}. Some response fields may be incompatible.'
+            ),
+            stacklevel=2,
+        )
+        _has_warned_about_api_version = True
+
     async def close(self) -> None:
         """Close the underlying HTTP client."""
         await self.client.aclose()
@@ -340,6 +364,7 @@ class KeleClient:
         self._maybe_start_sdk_update_check()
         response = await self.client.get('/v1/healthz')
         response.raise_for_status()
+        self._maybe_warn_about_api_version(response)
         return HealthzResult(**response.json())
 
     async def readyz(self) -> ReadyzResult:
@@ -347,6 +372,7 @@ class KeleClient:
         self._maybe_start_sdk_update_check()
         response = await self.client.get('/v1/readyz')
         response.raise_for_status()
+        self._maybe_warn_about_api_version(response)
         return ReadyzResult(**response.json())
 
     async def infer(
@@ -384,6 +410,7 @@ class KeleClient:
             timeout=None,
         )
         response.raise_for_status()
+        self._maybe_warn_about_api_version(response)
         return InferResult(**response.json())
 
     async def kbs(
@@ -419,6 +446,7 @@ class KeleClient:
             timeout=None,
         )
         response.raise_for_status()
+        self._maybe_warn_about_api_version(response)
         return KbsResult(**response.json())
 
 
@@ -584,4 +612,5 @@ def _first_non_none(*values: Any) -> Any:
         if value is not None:
             return value
     return None
+
 

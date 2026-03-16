@@ -22,6 +22,8 @@ pip install .
 
 `files` 参数支持 `str`、`Path`（标准或 anyio）或 `(文件名, 字节流)`。
 
+当前 SDK 面向 `X-Kele-Api-Version: 0.2.0` 的 HTTP API；如果服务端返回了不同的 API version header，SDK 会给出一次 warning。
+
 ### `kl`
 
 `kl` 是供上传脚本使用的公共 Python 接口，覆盖当前支持的最小范围：
@@ -76,3 +78,4 @@ from kl.knowledge_bases.builtin_base import BOOL_CONCEPT, true_const
 - HTTP client: [example.py](./example.py)
 - 原始 runtime 脚本: [relationship.py](./relationship.py)
 - 公共接口脚本: [relationship_kl.py](./relationship_kl.py)
+
