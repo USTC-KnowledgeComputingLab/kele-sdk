@@ -24,6 +24,14 @@ pip install .
 
 当前 SDK 面向 `X-Kele-Api-Version: 0.2.0` 的 HTTP API；如果服务端返回了不同的 API version header，SDK 会给出一次 warning。
 
+版本包括如下几种：
+
+- 引擎版本：例如 `KELE 0.0.1`
+- HTTP 接口主版本：例如 `/v1/infer`
+- API schema 版本：例如响应头 `X-Kele-Api-Version: 0.2.0`
+
+`kele-sdk` 的兼容范围应主要根据 API schema 版本判断，而不是只根据引擎版本号推断。
+
 ### `kl`
 
 `kl` 是供上传脚本使用的公共 Python 接口，覆盖当前支持的最小范围：
